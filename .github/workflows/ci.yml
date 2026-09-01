@@ -1,0 +1,51 @@
+# Verifies the SDK against the shared contract, on the artifact that would
+# actually be published rather than on the source tree, so a broken "files" or
+# "exports" field fails here instead of on somebody's install.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [18, 20, 22, 24]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+
+      - run: npm install
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests and shared gateway vectors
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Conformance, against the packed artifact
+        run: |
+          TARBALL="$(npm pack --silent)"
+          npm --prefix contract/harness install "$PWD/$TARBALL"
+          npm run conformance

@@ -1,0 +1,61 @@
+{
+  "name": "marginfuse",
+  "version": "0.2.0",
+  "description": "MarginFuse server-side SDK. AI profitability guardrails: connect revenue to per-request AI cost and stop loss-making requests before they run. Sends usage metadata only, never prompts or responses.",
+  "license": "MIT",
+  "author": "Pemira Labs",
+  "homepage": "https://marginfuse.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/marginfuse/marginfuse-node.git"
+  },
+  "bugs": {
+    "url": "https://github.com/marginfuse/marginfuse-node/issues"
+  },
+  "keywords": [
+    "ai",
+    "llm",
+    "cost",
+    "margin",
+    "profitability",
+    "stripe",
+    "openai",
+    "anthropic",
+    "openrouter"
+  ],
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm,cjs --dts --clean",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "conformance": "npm --prefix contract/harness run conformance node"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "tsup": "^8.5.0",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.0"
+  }
+}

@@ -1,0 +1,68 @@
+# Publishes to npm when a v* tag is pushed.
+#
+# Publishing prefers OIDC trusted publishing, which npm verifies against this
+# exact workflow in this exact repository, so no long-lived token is needed.
+# Every release carries a provenance attestation either way, so the build that
+# produced it is publicly verifiable.
+#
+# NPM_TOKEN is a bootstrap only. Trusted publishing is configured on a
+# package's settings page, which does not exist until the package does, so the
+# very first publish of a new package name cannot use it. The npm CLI prefers
+# OIDC whenever it is available and falls back to the token, so once trusted
+# publishing is configured the secret can simply be deleted and this workflow
+# keeps working unchanged.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing needs npm 11.5.1 or newer; setup-node ships older.
+      - name: Use a publishing-capable npm
+        run: npm install -g npm@latest
+
+      - run: npm install
+
+      - name: The tag must match the version being published
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "tag v$TAG does not match package.json $PKG"
+            exit 1
+          fi
+
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+      - name: Conformance must pass before anything is published
+        run: |
+          TARBALL="$(npm pack --silent)"
+          npm --prefix contract/harness install "$PWD/$TARBALL"
+          npm run conformance
+
+      - name: Publish
+        run: npm publish --provenance --access public
+        env:
+          # Empty once trusted publishing is configured; OIDC takes precedence.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
