@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1]
+
+No code changes. This is the first release published by the release workflow
+rather than from a laptop, so it is the first to carry a
+[provenance attestation](https://docs.npmjs.com/generating-provenance-statements):
+the build that produced this tarball is publicly verifiable, and it was
+published through OIDC with no npm token existing anywhere in this repository.
+
+0.2.0 had to be published locally, because trusted publishing is configured on
+a package settings page that does not exist until the package does.
+
 ## [0.2.0]
 
 First release from this repository. Earlier versions were published from a
