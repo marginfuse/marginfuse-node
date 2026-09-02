@@ -1,7 +1,7 @@
 /**
  * MarginFuse Node SDK.
  *
- * Reliability contract (spec §5.5, §29.3): this SDK NEVER throws into
+ * Reliability contract: this SDK NEVER throws into
  * application code and NEVER blocks a request on MarginFuse availability.
  * decide() fails open to "allow" on any timeout or error; track()/report()
  * retry in the background and surface problems only via options.onError.
@@ -14,6 +14,8 @@ import type {
   MarginFuseOptions,
   TrackParams,
 } from "./types.js";
+
+import { VERSION } from "./version.js";
 
 const DEFAULT_BASE_URL = "https://api.marginfuse.com";
 const DEFAULT_TIMEOUT_MS = 1500;
@@ -37,8 +39,9 @@ export class MarginFuse {
   }
 
   /**
-   * Pre-request policy check (protection-ready integrations, §13.2).
-   * Always resolves. On any failure resolves {action:"allow", degraded:true}.
+   * Asks whether the next provider call should run.
+   * Always resolves. On any failure resolves {action:"allow", degraded:true},
+   * because MarginFuse being unreachable must never become your outage.
    */
   async decide(params: DecideParams): Promise<Decision> {
     const failOpen = (reason: string): Decision => ({
@@ -79,8 +82,9 @@ export class MarginFuse {
   }
 
   /**
-   * Report actual usage after the provider call (monitor-only §13.1 and
-   * post-request reconciliation §25.3). Fire-and-forget with retries.
+   * Reports what a provider call actually consumed, after it happened.
+   * Returns immediately and retries in the background. Call flush() before
+   * the process exits, or the last events go with it.
    */
   track(params: TrackParams): void {
     const event = {
@@ -116,7 +120,7 @@ export class MarginFuse {
     await this.flush();
   }
 
-  /** Tell MarginFuse what your app actually did with a decision (§25.2). */
+  /** Tells MarginFuse what your application did with a decision. */
   acknowledge(decisionId: string, acknowledgment: Acknowledgment): void {
     this.background(async () => {
       try {
@@ -194,8 +198,9 @@ export class MarginFuse {
       return { kind: "completed", result: out.result, decision };
     } catch (err) {
       outcome = "provider_error";
-      // Provider may still have charged - record the attempt without usage (§15.4);
-      // the app can send a corrected event with real usage if it has it.
+      // The provider may still have charged for the attempt, so record it
+      // without usage. The application can send a corrected event later if
+      // it learns the real numbers.
       this.track({
         customerId: params.customerId,
         ...(params.feature !== undefined ? { feature: params.feature } : {}),
@@ -227,7 +232,7 @@ export class MarginFuse {
       headers: {
         authorization: `Bearer ${this.apiKey}`,
         "content-type": "application/json",
-        "user-agent": "marginfuse-node/0.1.0",
+        "user-agent": `marginfuse-node/${VERSION}`,
       },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(timeoutMs),

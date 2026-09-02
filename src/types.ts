@@ -1,7 +1,7 @@
 /**
  * Wire types for the MarginFuse SDK. Deliberately: there is NO field for
  * prompt text, responses, or documents - the SDK cannot leak what it cannot
- * carry (spec §5.6, §33).
+ * carry.
  */
 
 export interface Usage {

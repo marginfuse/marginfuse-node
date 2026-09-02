@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2]
+
+### Fixed
+
+- The user-agent reported `marginfuse-node/0.1.0` on every request, two
+  releases after 0.1.0. The version was a literal that nothing compared to
+  `package.json`, so support questions about which version sent a request got
+  a wrong answer. It is now derived from a single constant and a test asserts
+  the two agree.
+
+### Changed
+
+- Public documentation comments no longer cite internal specification section
+  numbers. They shipped in `dist/index.d.ts`, so hovering `decide()` in an
+  editor showed a reference to a document nobody outside can read. The
+  comments now say what the methods do.
+
 ## [0.2.1]
 
 No code changes. This is the first release published by the release workflow

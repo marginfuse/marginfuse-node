@@ -8,7 +8,7 @@ function mockFetch(handler: (url: string, init: RequestInit) => Response | Promi
 const ok = (body: unknown) =>
   new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
 
-describe("decide - fail-open contract (§5.5, §38.3)", () => {
+describe("decide - fail-open contract", () => {
   it("returns the server decision when healthy", async () => {
     const f = mockFetch(() =>
       ok({ id: "dec_1", action: "downgrade", model: "gpt-4.1-mini", provider: "openai" }),
@@ -100,7 +100,7 @@ describe("track", () => {
 });
 
 describe("guard", () => {
-  it("blocked: acks and never calls the provider (§26.2)", async () => {
+  it("blocked: acks and never calls the provider", async () => {
     const posts: string[] = [];
     const f = mockFetch((url) => {
       posts.push(url);
