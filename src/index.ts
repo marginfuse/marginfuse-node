@@ -19,6 +19,8 @@ export type {
   TrackParams,
   DecideParams,
   Decision,
+  IdentifyParams,
+  IdentifyResult,
   DecisionAction,
   Acknowledgment,
   Usage,

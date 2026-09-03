@@ -74,6 +74,37 @@ that runs.
 Policies run in dry-run first. You see what protection would have done against
 your real traffic before anything is allowed to act.
 
+## Tell MarginFuse what a customer pays
+
+Margin needs a revenue side. With Stripe connected it comes from there. Without
+one, you declare your plans in MarginFuse and say which plan each customer is
+on:
+
+```ts
+const res = await mf.identify({
+  customerId: "user_8x2m91",
+  plan: "pro",                    // the key of a plan you declared in Settings
+  name: "Acme Studio",
+  metadata: { tier: "legacy" },   // labels segment policies can match on
+});
+
+if (!res.ok) console.warn("MarginFuse identify:", res.error);
+```
+
+Safe to call on every sign-in: sending the plan the customer is already on
+changes nothing. Sending a different one ends the current cycle and prorates
+what accrued. `periodStart` backdates the cycle for a customer who has been
+paying since an earlier date; `clearPlan: true` takes them off plans.
+
+This is the one call that does not fail open. `track()` retries later and
+`decide()` allows, because both have a safe default; "I could not record what
+this customer pays" has none, and a wrong plan is a wrong margin. So it reports
+the failure to you instead of swallowing it. It still never throws.
+
+`track()`, `guard()` and `decide()` also accept a `plan`, so it can ride along
+with usage rather than needing its own call. There it is a hint: a key that
+does not resolve is ignored rather than failing your event.
+
 ## OpenRouter and other gateways
 
 Gateways report the real cost of every call. Forward it and your figures are

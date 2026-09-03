@@ -11,6 +11,8 @@ import type {
   Acknowledgment,
   DecideParams,
   Decision,
+  IdentifyParams,
+  IdentifyResult,
   MarginFuseOptions,
   TrackParams,
 } from "./types.js";
@@ -114,6 +116,51 @@ export class MarginFuse {
     });
   }
 
+  /**
+   * Tells MarginFuse who a customer is and what plan they are on.
+   *
+   * `plan` is the key of a plan you declared in MarginFuse Settings. From its
+   * price MarginFuse derives the customer's revenue per period, which is what
+   * makes margin per customer and margin policies work with no revenue source
+   * connected. Those figures are labeled as a declared price everywhere they
+   * appear, because nobody confirmed collection.
+   *
+   * Safe to call on every sign-in: sending the plan the customer is already on
+   * changes nothing. Sending a different one ends the current cycle at that
+   * moment and prorates what accrued.
+   *
+   * Unlike track(), this awaits and reports failure, because "I could not
+   * record what this customer pays" has no safe default - a wrong plan is a
+   * wrong margin. It still never throws: the failure comes back as
+   * `{ ok: false }` with a reason, and onError is called.
+   */
+  async identify(params: IdentifyParams): Promise<
+    { ok: true; result: IdentifyResult } | { ok: false; error: string }
+  > {
+    const body = {
+      customerId: params.customerId,
+      ...(params.plan !== undefined ? { plan: params.plan } : {}),
+      ...(params.clearPlan !== undefined ? { clearPlan: params.clearPlan } : {}),
+      ...(params.periodStart !== undefined ? { periodStart: params.periodStart.toISOString() } : {}),
+      ...(params.name !== undefined ? { name: params.name } : {}),
+      ...(params.email !== undefined ? { email: params.email } : {}),
+      ...(params.metadata !== undefined ? { metadata: params.metadata } : {}),
+    };
+    try {
+      const res = await this.post("/v1/identify", body, 5000);
+      if (!res.ok) {
+        const detail = await safeText(res);
+        const err = new Error(`identify: HTTP ${res.status} ${detail}`);
+        this.onError(err, "identify");
+        return { ok: false, error: err.message };
+      }
+      return { ok: true, result: (await res.json()) as IdentifyResult };
+    } catch (err) {
+      this.onError(err as Error, "identify");
+      return { ok: false, error: (err as Error).message };
+    }
+  }
+
   /** Awaitable variant of track for jobs/scripts that must not exit early. */
   async trackAndWait(params: TrackParams): Promise<void> {
     this.track(params);
@@ -180,6 +227,7 @@ export class MarginFuse {
       const out = await run({ model: modelToUse, provider: decision.provider, decision });
       this.track({
         customerId: params.customerId,
+        ...(params.plan !== undefined ? { plan: params.plan } : {}),
         ...(params.feature !== undefined ? { feature: params.feature } : {}),
         provider: params.provider,
         model: modelToUse,
@@ -203,6 +251,7 @@ export class MarginFuse {
       // it learns the real numbers.
       this.track({
         customerId: params.customerId,
+        ...(params.plan !== undefined ? { plan: params.plan } : {}),
         ...(params.feature !== undefined ? { feature: params.feature } : {}),
         provider: params.provider,
         model: modelToUse,

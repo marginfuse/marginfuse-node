@@ -20,6 +20,13 @@ export interface TrackParams {
   eventId?: string;
   /** Your application's id for the end customer (or their Stripe customer id). */
   customerId: string;
+  /**
+   * The key of a plan you declared in MarginFuse. Sending it keeps the
+   * customer's plan current as traffic flows, so you rarely need identify()
+   * on its own. A key that does not resolve is ignored: an event is about
+   * usage, and a plan note must never cost you the usage.
+   */
+  plan?: string;
   /** Stable feature key, e.g. "ai_chat". */
   feature?: string;
   provider: "openai" | "anthropic" | "openrouter" | (string & {});
@@ -38,6 +45,8 @@ export interface TrackParams {
 
 export interface DecideParams {
   customerId: string;
+  /** Declared plan key, applied before the policies are evaluated. Ignored if it does not resolve. */
+  plan?: string;
   feature?: string;
   provider: "openai" | "anthropic" | "openrouter" | (string & {});
   model: string;
@@ -59,6 +68,37 @@ export interface Decision {
   /** True when MarginFuse could not be reached / evaluated - request allowed (fail-open). */
   degraded: boolean;
   degradedReason?: string;
+}
+
+export interface IdentifyParams {
+  /** Your application's id for the end customer (or their Stripe customer id). */
+  customerId: string;
+  /**
+   * The key of a plan declared in MarginFuse Settings - not a Stripe price.
+   * MarginFuse derives revenue from that plan's price, which is what makes
+   * margin work with no revenue source connected. Omit to leave the plan as it
+   * is; sending the plan the customer is already on changes nothing.
+   */
+  plan?: string;
+  /** Take the customer off declared plans entirely. Cannot be combined with `plan`. */
+  clearPlan?: boolean;
+  /** When this customer's current cycle started, if earlier than now. */
+  periodStart?: Date;
+  /** Display name shown in the MarginFuse dashboard. */
+  name?: string;
+  email?: string;
+  /** Short labels segment policies can match on, e.g. { tier: "legacy" }. */
+  metadata?: Record<string, string>;
+}
+
+export interface IdentifyResult {
+  /** MarginFuse's id for this customer, stable across calls. */
+  customerId: string;
+  /** The declared plan now in force, or null when the customer is on none. */
+  plan: string | null;
+  /** The current declared cycle, when there is one. */
+  periodStart?: string;
+  periodEnd?: string;
 }
 
 export type Acknowledgment =

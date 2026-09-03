@@ -237,3 +237,115 @@ describe("guard", () => {
     expect(bodies.some((u) => u.endsWith("/v1/events"))).toBe(true);
   });
 });
+
+describe("identify - the plan a customer is on", () => {
+  it("sends the plan and returns what is now in force", async () => {
+    const calls: unknown[] = [];
+    const f = mockFetch((url, init) => {
+      calls.push([url, JSON.parse(String(init.body))]);
+      return ok({ customerId: "cus_local_1", plan: "pro", periodStart: "2026-09-01T00:00:00.000Z" });
+    });
+    const mf = new MarginFuse({ apiKey: "k", fetch: f as unknown as typeof fetch });
+
+    const res = await mf.identify({
+      customerId: "acct_9001",
+      plan: "pro",
+      name: "Acme",
+      metadata: { tier: "legacy" },
+    });
+
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.result.plan).toBe("pro");
+      expect(res.result.customerId).toBe("cus_local_1");
+    }
+    const [url, body] = calls[0] as [string, Record<string, unknown>];
+    expect(url).toContain("/v1/identify");
+    expect(body).toEqual({ customerId: "acct_9001", plan: "pro", name: "Acme", metadata: { tier: "legacy" } });
+  });
+
+  it("omits what the caller did not set, so absent never means 'clear it'", async () => {
+    const calls: unknown[] = [];
+    const f = mockFetch((_url, init) => {
+      calls.push(JSON.parse(String(init.body)));
+      return ok({ customerId: "c", plan: null });
+    });
+    const mf = new MarginFuse({ apiKey: "k", fetch: f as unknown as typeof fetch });
+    await mf.identify({ customerId: "acct_9001" });
+    expect(calls[0]).toEqual({ customerId: "acct_9001" });
+  });
+
+  it("sends a backdated cycle start as an ISO instant", async () => {
+    const calls: unknown[] = [];
+    const f = mockFetch((_url, init) => {
+      calls.push(JSON.parse(String(init.body)));
+      return ok({ customerId: "c", plan: "pro" });
+    });
+    const mf = new MarginFuse({ apiKey: "k", fetch: f as unknown as typeof fetch });
+    await mf.identify({ customerId: "a", plan: "pro", periodStart: new Date(Date.UTC(2026, 5, 5, 9, 30)) });
+    expect((calls[0] as Record<string, unknown>).periodStart).toBe("2026-06-05T09:30:00.000Z");
+  });
+
+  it("reports a rejection instead of throwing, because a wrong plan is a wrong margin", async () => {
+    const onError = vi.fn();
+    const f = mockFetch(() => new Response(JSON.stringify({ error: "plan_not_found" }), { status: 404 }));
+    const mf = new MarginFuse({ apiKey: "k", onError, fetch: f as unknown as typeof fetch });
+
+    const res = await mf.identify({ customerId: "a", plan: "nope" });
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toContain("404");
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it("survives an unreachable server the same way", async () => {
+    const onError = vi.fn();
+    const f = mockFetch(() => {
+      throw new Error("network down");
+    });
+    const mf = new MarginFuse({ apiKey: "k", onError, fetch: f as unknown as typeof fetch });
+    const res = await mf.identify({ customerId: "a", plan: "pro" });
+    expect(res.ok).toBe(false);
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("plan hint on usage and decisions", () => {
+  it("track carries the plan through", async () => {
+    const calls: unknown[] = [];
+    const f = mockFetch((_url, init) => {
+      calls.push(JSON.parse(String(init.body)));
+      return ok({});
+    });
+    const mf = new MarginFuse({ apiKey: "k", fetch: f as unknown as typeof fetch });
+    mf.track({ customerId: "c1", plan: "pro", provider: "openai", model: "gpt-4.1", usage: {} });
+    await mf.flush();
+    const body = calls[0] as { events: Array<Record<string, unknown>> };
+    expect(body.events[0]!.plan).toBe("pro");
+  });
+
+  it("guard forwards the plan to both the decision and the usage it reports", async () => {
+    const bodies: Array<[string, Record<string, unknown>]> = [];
+    const f = mockFetch((url, init) => {
+      bodies.push([url, JSON.parse(String(init.body))]);
+      if (url.includes("/v1/decisions") && !url.includes("/ack")) {
+        return ok({ id: "dec_1", action: "allow", model: "gpt-4.1", provider: "openai", degraded: false });
+      }
+      return ok({});
+    });
+    const mf = new MarginFuse({ apiKey: "k", fetch: f as unknown as typeof fetch });
+
+    await mf.guard(
+      { customerId: "c1", plan: "pro", provider: "openai", model: "gpt-4.1" },
+      async () => ({ result: 1, usage: { inputTokens: 10 } }),
+    );
+    await mf.flush();
+
+    const decideBody = bodies.find(([u]) => u.endsWith("/v1/decisions"))![1];
+    expect(decideBody.plan).toBe("pro");
+    const eventsBody = bodies.find(([u]) => u.endsWith("/v1/events"))![1] as {
+      events: Array<Record<string, unknown>>;
+    };
+    expect(eventsBody.events[0]!.plan).toBe("pro");
+  });
+});
