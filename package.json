@@ -1,6 +1,6 @@
 {
   "name": "marginfuse",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "MarginFuse server-side SDK. AI profitability guardrails: connect revenue to per-request AI cost and stop loss-making requests before they run. Sends usage metadata only, never prompts or responses.",
   "license": "MIT",
   "author": "Pemira Labs",

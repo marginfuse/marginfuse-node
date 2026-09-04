@@ -9,7 +9,7 @@
  *
  * See github.com/marginfuse/sdk-contract.
  */
-export const CONTRACT_VERSION = 1;
+export const CONTRACT_VERSION = 2;
 
 export { MarginFuse } from "./client.js";
 export { fromOpenRouter } from "./openrouter.js";

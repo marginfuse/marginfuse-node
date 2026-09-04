@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
-import { MarginFuse } from "../src/client.js";
+import { MarginFuse, parseRetryAfter } from "../src/client.js";
+import type { DecideParams, TrackParams } from "../src/types.js";
 
 function mockFetch(handler: (url: string, init: RequestInit) => Response | Promise<Response>) {
   return vi.fn(async (input: string | URL, init?: RequestInit) => handler(String(input), init!));
@@ -347,5 +348,415 @@ describe("plan hint on usage and decisions", () => {
       events: Array<Record<string, unknown>>;
     };
     expect(eventsBody.events[0]!.plan).toBe("pro");
+  });
+});
+
+describe("the wire format cannot express prompt content", () => {
+  // README invariant 5 / §5.6 / §33. The type says there is no field for
+  // content, but the type is not what leaves the process: TypeScript's
+  // excess-property check fires on a fresh object literal and never on a
+  // variable, and real applications assemble their parameters in variables.
+  // These assert on the bytes.
+  const SECRET = "PATIENT SSN 123-45-6789";
+
+  function bodiesOf(f: ReturnType<typeof mockFetch>): string[] {
+    return f.mock.calls.map((c) => String((c[1] as RequestInit).body));
+  }
+
+  it("track drops everything it was not asked for, however it was handed over", async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const f = mockFetch((_url, init) => {
+      calls.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+      return ok({});
+    });
+    const mf = new MarginFuse({ apiKey: "k", fetch: f as unknown as typeof fetch });
+
+    const params = {
+      customerId: "c1",
+      provider: "openai",
+      model: "gpt-4.1",
+      usage: { inputTokens: 900, outputTokens: 120 },
+      prompt: SECRET,
+      messages: [{ role: "user", content: SECRET }],
+      response: SECRET,
+    } as unknown as TrackParams;
+    mf.track(params);
+    await mf.flush();
+
+    expect(bodiesOf(f).join("")).not.toContain(SECRET);
+    const event = (calls[0] as { events: Array<Record<string, unknown>> }).events[0]!;
+    expect(Object.keys(event).sort()).toEqual(
+      ["customerId", "eventId", "model", "occurredAt", "outcome", "provider", "usage"].sort(),
+    );
+  });
+
+  it("usage carries the six metered quantities and nothing else", async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const f = mockFetch((_url, init) => {
+      calls.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+      return ok({});
+    });
+    const mf = new MarginFuse({ apiKey: "k", fetch: f as unknown as typeof fetch });
+
+    // `Usage` is an interface, so a variable with extra keys satisfies it.
+    const usage = { inputTokens: 10, prompt: SECRET } as unknown as TrackParams["usage"];
+    mf.track({ customerId: "c1", provider: "openai", model: "m", usage });
+    await mf.flush();
+
+    const event = (calls[0] as { events: Array<Record<string, unknown>> }).events[0]!;
+    expect(event.usage).toEqual({ inputTokens: 10 });
+    expect(bodiesOf(f).join("")).not.toContain(SECRET);
+  });
+
+  it("decide sends the decision fields only", async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const f = mockFetch((_url, init) => {
+      calls.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+      return ok({ id: "d1", action: "allow", model: "gpt-4.1", provider: "openai", degraded: false });
+    });
+    const mf = new MarginFuse({ apiKey: "k", fetch: f as unknown as typeof fetch });
+
+    const params = {
+      customerId: "c1",
+      provider: "openai",
+      model: "gpt-4.1",
+      expectedUsage: { inputTokens: 100, prompt: SECRET },
+      messages: [{ role: "user", content: SECRET }],
+    } as unknown as DecideParams;
+    await mf.decide(params);
+
+    expect(calls[0]).toEqual({
+      customerId: "c1",
+      provider: "openai",
+      model: "gpt-4.1",
+      expectedUsage: { inputTokens: 100 },
+    });
+    expect(bodiesOf(f).join("")).not.toContain(SECRET);
+  });
+
+  it("an eventId that is present but undefined still gets one generated", async () => {
+    // `eventId: maybeId` is ordinary TypeScript. A spread put that undefined
+    // over the generated default, the API answered 422, and the event was
+    // dropped without a sound (the default onError does nothing).
+    const calls: Array<Record<string, unknown>> = [];
+    const f = mockFetch((_url, init) => {
+      calls.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+      return ok({});
+    });
+    const mf = new MarginFuse({ apiKey: "k", fetch: f as unknown as typeof fetch });
+
+    const maybeId: string | undefined = undefined;
+    // The cast is this repo's exactOptionalPropertyTypes, not the customer's:
+    // that flag is off by default, so `eventId: maybeId` compiles as written in
+    // the applications this SDK ships to. The bytes are the same either way.
+    mf.track({
+      eventId: maybeId,
+      customerId: "c1",
+      provider: "openai",
+      model: "gpt-4.1",
+      usage: { inputTokens: 1 },
+    } as unknown as TrackParams);
+    await mf.flush();
+
+    const event = (calls[0] as { events: Array<Record<string, unknown>> }).events[0]!;
+    expect(event.eventId).toMatch(/^evt_/);
+  });
+});
+
+describe("guard reports what actually happened", () => {
+  function downgradeTo(model: string, provider: string) {
+    const bodies: Array<[string, Record<string, unknown>]> = [];
+    const f = mockFetch((url, init) => {
+      bodies.push([url, JSON.parse(String(init.body ?? "{}")) as Record<string, unknown>]);
+      if (url.endsWith("/v1/decisions")) {
+        return ok({ id: "dec_x", action: "downgrade", model, provider, degraded: false });
+      }
+      return ok({});
+    });
+    return { f, bodies };
+  }
+
+  it("a cross-vendor downgrade is billed to the provider that ran, not the one asked for", async () => {
+    // The server may downgrade across vendors, which is why the callback is
+    // handed decision.provider. Reporting params.provider priced the call from
+    // the wrong catalogue: run on Anthropic, billed as OpenAI.
+    const { f, bodies } = downgradeTo("claude-haiku-4-5", "anthropic");
+    const mf = new MarginFuse({ apiKey: "k", fetch: f as unknown as typeof fetch });
+
+    const out = await mf.guard(
+      { customerId: "c1", provider: "openai", model: "gpt-4.1" },
+      async ({ model, provider }) => {
+        expect(model).toBe("claude-haiku-4-5");
+        expect(provider).toBe("anthropic");
+        return { result: "resp", usage: { inputTokens: 50 } };
+      },
+    );
+    await mf.flush();
+
+    expect(out.kind).toBe("completed");
+    const ev = (
+      bodies.find(([u]) => u.endsWith("/v1/events"))![1] as { events: Array<Record<string, unknown>> }
+    ).events[0]!;
+    expect(ev.provider).toBe("anthropic");
+    expect(ev.model).toBe("claude-haiku-4-5");
+    expect(ev.requestedModel).toBe("gpt-4.1");
+  });
+
+  it("a downgrade whose provider call then fails is still acknowledged as a downgrade", async () => {
+    const { f, bodies } = downgradeTo("gpt-4.1-mini", "openai");
+    const mf = new MarginFuse({ apiKey: "k", fetch: f as unknown as typeof fetch });
+
+    await expect(
+      mf.guard({ customerId: "c1", provider: "openai", model: "gpt-4.1" }, async () => {
+        throw new Error("provider exploded");
+      }),
+    ).rejects.toThrow("provider exploded");
+    await mf.flush();
+
+    const ack = bodies.find(([u]) => u.includes("/ack"))![1] as { acknowledgment: string };
+    expect(ack.acknowledgment).toBe("used_downgrade_model");
+    const ev = (
+      bodies.find(([u]) => u.endsWith("/v1/events"))![1] as { events: Array<Record<string, unknown>> }
+    ).events[0]!;
+    expect(ev.model).toBe("gpt-4.1-mini");
+    expect(ev.outcome).toBe("provider_error");
+  });
+
+  it("the usage event goes out before the ack that refers to it", async () => {
+    const order: string[] = [];
+    const f = mockFetch((url) => {
+      order.push(new URL(url).pathname);
+      if (url.endsWith("/v1/decisions")) {
+        return ok({ id: "dec_o", action: "allow", model: "m", provider: "openai", degraded: false });
+      }
+      return ok({});
+    });
+    const mf = new MarginFuse({ apiKey: "k", fetch: f as unknown as typeof fetch });
+
+    await mf.guard({ customerId: "c1", provider: "openai", model: "m" }, async () => ({
+      result: 1,
+      usage: { inputTokens: 3 },
+    }));
+    await mf.flush();
+
+    // Batching must not let the ack overtake the event: an ack that arrives
+    // first describes a call MarginFuse has not been told about yet.
+    expect(order).toEqual(["/v1/decisions", "/v1/events", "/v1/decisions/dec_o/ack"]);
+  });
+});
+
+describe("the SDK never becomes the application's failure", () => {
+  it("an onError that throws is swallowed rather than crashing the process", async () => {
+    // onError is called from inside background tasks that nothing awaits unless
+    // the application calls flush(). An unhandled rejection there terminates a
+    // Node process under the default settings (§5.5).
+    const unhandled: unknown[] = [];
+    const listener = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", listener);
+    try {
+      const f = mockFetch(() => new Response("bad", { status: 422 }));
+      const mf = new MarginFuse({
+        apiKey: "k",
+        batchIntervalMs: 0,
+        onError: () => {
+          throw new Error("the application's own logger is broken");
+        },
+        fetch: f as unknown as typeof fetch,
+      });
+
+      // Deliberately no flush: this is the path where nothing is awaited.
+      mf.track({ customerId: "c1", provider: "openai", model: "m", usage: {} });
+      await new Promise((r) => setTimeout(r, 100));
+      // And the awaited path resolves normally too.
+      await expect(mf.flush()).resolves.toBeUndefined();
+    } finally {
+      process.off("unhandledRejection", listener);
+    }
+    expect(unhandled).toEqual([]);
+  });
+
+  it("a decide whose onError throws still returns a fail-open decision", async () => {
+    const f = mockFetch(() => new Response("boom", { status: 500 }));
+    const mf = new MarginFuse({
+      apiKey: "k",
+      onError: () => {
+        throw new Error("the application's own logger is broken");
+      },
+      fetch: f as unknown as typeof fetch,
+    });
+    const d = await mf.decide({ customerId: "c1", provider: "openai", model: "gpt-4.1" });
+    expect(d).toMatchObject({ action: "allow", degraded: true, model: "gpt-4.1" });
+  });
+
+  it("reports a thrown non-Error as an Error, because onError is typed to receive one", async () => {
+    const errors: Error[] = [];
+    const f = vi.fn(async () => {
+      throw "ECONNRESET"; // eslint-disable-line no-throw-literal
+    });
+    const mf = new MarginFuse({
+      apiKey: "k",
+      onError: (e) => errors.push(e),
+      fetch: f as unknown as typeof fetch,
+    });
+    await mf.decide({ customerId: "c1", provider: "openai", model: "m" });
+    expect(errors[0]).toBeInstanceOf(Error);
+    expect(errors[0]!.message).toBe("ECONNRESET");
+  });
+});
+
+describe("buffering", () => {
+  function collector(): {
+    f: ReturnType<typeof mockFetch>;
+    batches: Array<Array<Record<string, unknown>>>;
+  } {
+    const batches: Array<Array<Record<string, unknown>>> = [];
+    const f = mockFetch((url, init) => {
+      if (url.endsWith("/v1/events")) {
+        const body = JSON.parse(String(init.body)) as { events: Array<Record<string, unknown>> };
+        batches.push(body.events);
+      }
+      return ok({});
+    });
+    return { f, batches };
+  }
+
+  const event = (eventId: string): TrackParams => ({
+    eventId,
+    customerId: "c1",
+    provider: "openai",
+    model: "gpt-4.1",
+    usage: { inputTokens: 1 },
+  });
+
+  it("coalesces events into one request instead of one request per AI call", async () => {
+    const { f, batches } = collector();
+    const mf = new MarginFuse({ apiKey: "k", fetch: f as unknown as typeof fetch });
+    mf.track(event("a"));
+    mf.track(event("b"));
+    mf.track(event("c"));
+    await mf.flush();
+
+    expect(batches).toHaveLength(1);
+    expect(batches[0]!.map((e) => e.eventId)).toEqual(["a", "b", "c"]);
+  });
+
+  it("never puts more than the server's 500 in one body", async () => {
+    const { f, batches } = collector();
+    const mf = new MarginFuse({ apiKey: "k", fetch: f as unknown as typeof fetch });
+    for (let i = 0; i < 501; i++) mf.track(event(`e${i}`));
+    await mf.flush();
+
+    expect(batches.map((b) => b.length)).toEqual([500, 1]);
+  });
+
+  it("sends on its own timer, so an application that never flushes still reports", async () => {
+    const { f, batches } = collector();
+    const mf = new MarginFuse({ apiKey: "k", batchIntervalMs: 20, fetch: f as unknown as typeof fetch });
+    mf.track(event("a"));
+    expect(batches, "the caller is never blocked on the send").toHaveLength(0);
+    await new Promise((r) => setTimeout(r, 120));
+    expect(batches).toHaveLength(1);
+  });
+
+  it("drops the newest event when the queue is full, and says so once", async () => {
+    const errors: Error[] = [];
+    const { f, batches } = collector();
+    const mf = new MarginFuse({
+      apiKey: "k",
+      maxQueuedEvents: 2,
+      onError: (e) => errors.push(e),
+      fetch: f as unknown as typeof fetch,
+    });
+
+    mf.track(event("a"));
+    mf.track(event("b"));
+    mf.track(event("c")); // over the bound
+    mf.track(event("d")); // over it too, but not a second complaint
+    await mf.flush();
+
+    expect(batches[0]!.map((e) => e.eventId)).toEqual(["a", "b"]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain("maxQueuedEvents");
+
+    // The bound is an episode, not a permanent state: once the queue drains,
+    // tracking works again and a later overflow is reported again.
+    mf.track(event("e"));
+    await mf.flush();
+    expect(batches[1]!.map((ev) => ev.eventId)).toEqual(["e"]);
+  });
+
+  it("caps how many requests are in flight at once", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const f = mockFetch(async () => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 30));
+      inFlight--;
+      return ok({});
+    });
+    const mf = new MarginFuse({
+      apiKey: "k",
+      batchIntervalMs: 0,
+      maxConcurrentRequests: 1,
+      fetch: f as unknown as typeof fetch,
+    });
+
+    for (const id of ["a", "b", "c"]) {
+      mf.track(event(id));
+      await new Promise((r) => setTimeout(r, 5)); // let each batch close
+    }
+    await mf.flush();
+
+    expect(f.mock.calls).toHaveLength(3);
+    expect(peak).toBe(1);
+  });
+
+  it("trackAndWait still drains what it queued", async () => {
+    const { f, batches } = collector();
+    const mf = new MarginFuse({ apiKey: "k", fetch: f as unknown as typeof fetch });
+    await expect(mf.trackAndWait(event("a"))).resolves.toBeUndefined();
+    expect(batches).toHaveLength(1);
+    expect(batches[0]!.map((e) => e.eventId)).toEqual(["a"]);
+  });
+});
+
+describe("retry backoff", () => {
+  it("waits as long as the server asked when it sends Retry-After", async () => {
+    let n = 0;
+    const f = mockFetch(() =>
+      ++n === 1 ? new Response("", { status: 429, headers: { "retry-after": "1" } }) : ok({}),
+    );
+    const mf = new MarginFuse({ apiKey: "k", fetch: f as unknown as typeof fetch });
+
+    const started = Date.now();
+    mf.track({ customerId: "c1", provider: "openai", model: "m", usage: {} });
+    await mf.flush();
+
+    expect(n).toBe(2);
+    // The schedule's own first wait tops out at 500 ms, so a wait past a second
+    // can only have come from the header.
+    expect(Date.now() - started).toBeGreaterThanOrEqual(950);
+  });
+
+  it("reads both forms of Retry-After, and refuses to be told anything absurd", () => {
+    expect(parseRetryAfter("2")).toBe(2000);
+    expect(parseRetryAfter(" 2 ")).toBe(2000);
+
+    const soon = parseRetryAfter(new Date(Date.now() + 5_000).toUTCString());
+    expect(soon).toBeGreaterThan(3_000);
+    expect(soon).toBeLessThanOrEqual(6_000);
+
+    // A stale date is a zero wait, never a negative one.
+    expect(parseRetryAfter(new Date(Date.now() - 60_000).toUTCString())).toBe(0);
+    // An hour is longer than we are willing to hold events in memory.
+    expect(parseRetryAfter("3600")).toBe(60_000);
+
+    expect(parseRetryAfter(null)).toBeUndefined();
+    expect(parseRetryAfter(undefined)).toBeUndefined();
+    expect(parseRetryAfter("")).toBeUndefined();
+    expect(parseRetryAfter("soon")).toBeUndefined();
   });
 });

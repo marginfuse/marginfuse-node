@@ -7,4 +7,4 @@
  * A literal drifts unless something checks it, so version.test.ts asserts this
  * equals the version in package.json and CI runs it before publishing.
  */
-export const VERSION = "0.3.0";
+export const VERSION = "0.4.0";

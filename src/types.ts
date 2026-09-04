@@ -117,4 +117,25 @@ export interface MarginFuseOptions {
   /** Called with transport errors the SDK swallowed (it never throws into your app). */
   onError?: (error: Error, context: string) => void;
   fetch?: typeof fetch;
+  /**
+   * How long an event may wait for company before its batch is sent, in ms.
+   * Default 200. Events also go as soon as a batch reaches the server's limit
+   * of 500, and flush() sends whatever is waiting immediately.
+   *
+   * Background work keeps the order your application produced it in, so an
+   * acknowledgment queued behind an open batch waits for it: raising this
+   * delays acknowledgments by the same amount.
+   */
+  batchIntervalMs?: number;
+  /**
+   * Most events held in memory at once. Default 10000.
+   *
+   * The bound exists for the minutes when MarginFuse is unreachable: past it
+   * the newest event is dropped and onError is called once, because a queue
+   * that grows without limit inside your process is our outage becoming yours
+   * by another route.
+   */
+  maxQueuedEvents?: number;
+  /** Most background requests in flight at once. Default 4. */
+  maxConcurrentRequests?: number;
 }
