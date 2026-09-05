@@ -76,9 +76,11 @@ your real traffic before anything is allowed to act.
 
 ## Tell MarginFuse what a customer pays
 
-Margin needs a revenue side. With Stripe connected it comes from there. Without
-one, you declare your plans in MarginFuse and say which plan each customer is
-on:
+Margin needs a revenue side: Stripe for web billing, RevenueCat for App Store
+and Google Play proceeds, or declared plan prices. RevenueCat joins by App User
+ID; use that same ID in your events. Without a billing connection, declare your
+plans in MarginFuse and say which plan each customer is on. Declared revenue
+is unverified and does not confirm payment:
 
 ```ts
 const res = await mf.identify({
@@ -142,7 +144,7 @@ new MarginFuse({
   apiKey: process.env.MARGINFUSE_KEY!,
   baseUrl: "https://api.marginfuse.com",  // point at your own deployment in dev
   timeoutMs: 1500,                        // decide() budget before failing open
-  onError: (err, context) => log.warn({ err, context }),  // the SDK never throws
+  onError: (err, context) => log.warn({ err, context }),  // SDK transport errors are reported here
 });
 ```
 
@@ -151,7 +153,7 @@ new MarginFuse({
 Everything, and nothing else:
 
 ```
-eventId  customerId  feature  provider  model  requestedModel
+eventId  customerId  feature  provider  model  requestedModel  plan
 usage { inputTokens, outputTokens, cachedInputTokens, cacheCreationTokens, images, audioSeconds }
 costUsd  occurredAt  outcome  decisionId  retryOfEventId  correctsEventId
 ```
@@ -174,7 +176,7 @@ npm install
 npm test          # unit tests, plus the shared gateway vectors
 npm run build && npm pack
 npm --prefix contract/harness install ../../marginfuse-*.tgz
-npm run conformance   # 16 scenarios against the packed artifact
+npm run conformance   # 24 scenarios against the packed artifact
 ```
 
 ## Links
